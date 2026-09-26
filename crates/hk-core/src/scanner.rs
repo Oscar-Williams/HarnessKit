@@ -2789,8 +2789,10 @@ mod tests {
         // exception list explicitly.
         let adapters = crate::adapter::all_adapters();
         for a in &adapters {
-            if a.name() == "hermes" {
-                // global-only: no on-disk project convention (hermes-agent#4667)
+            if matches!(a.name(), "hermes" | "penguin") {
+                // global-only: no on-disk project convention
+                // (hermes-agent#4667; PenguinHarness keeps projects below its
+                // own data root rather than marking user workspaces).
                 continue;
             }
             assert!(

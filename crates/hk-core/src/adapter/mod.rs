@@ -11,6 +11,7 @@ pub mod hook_events;
 pub mod kiro;
 pub mod opencode;
 pub mod omp;
+pub mod penguin;
 pub mod qoder_cn;
 pub mod windsurf;
 
@@ -862,6 +863,7 @@ pub fn all_adapters() -> Vec<Box<dyn AgentAdapter>> {
         Box::new(dsh::DshAdapter::new()),
         Box::new(grok::GrokAdapter::new()),
         Box::new(qoder_cn::QoderCnAdapter::new()),
+        Box::new(penguin::PenguinAdapter::new()),
     ]
 }
 
@@ -902,15 +904,18 @@ mod tests {
 
     #[test]
     fn mcp_remote_capability_derivation() {
-        // Codex (TOML) and dsh (DshTransport) are HTTP-only; every other
-        // adapter's remote schema supports both transports. Pinned so a
-        // future agent with partial support must consciously extend the
-        // derivation.
+        // Codex (TOML) and dsh (DshTransport) are HTTP-only. Penguin has no
+        // verified remote MCP format yet. Pinned so a future agent with
+        // partial support must consciously extend the derivation.
         for a in all_adapters() {
             let caps = crate::models::AgentCapabilities::from_adapter(a.as_ref());
             match a.name() {
                 "codex" | "dsh" => {
                     assert!(caps.mcp_remote.http);
+                    assert!(!caps.mcp_remote.sse);
+                }
+                "penguin" => {
+                    assert!(!caps.mcp_remote.http);
                     assert!(!caps.mcp_remote.sse);
                 }
                 _ => {
@@ -922,9 +927,9 @@ mod tests {
     }
 
     #[test]
-    fn test_all_adapters_returns_fourteen() {
+    fn test_all_adapters_returns_fifteen() {
         let adapters = all_adapters();
-        assert_eq!(adapters.len(), 14);
+        assert_eq!(adapters.len(), 15);
         let names: Vec<&str> = adapters.iter().map(|a| a.name()).collect();
         assert_eq!(
             names,
@@ -943,6 +948,7 @@ mod tests {
                 "dsh",
                 "grok",
                 "qoder-cn",
+                "penguin",
             ]
         );
     }
@@ -967,6 +973,7 @@ mod tests {
         for name in [
             "claude", "codex", "gemini", "cursor", "copilot", "opencode", "hermes", "kiro", "omp",
             "dsh", "grok",
+            "penguin",
         ] {
             assert!(
                 !by_name[name].needs_path_injection(),
@@ -1017,6 +1024,7 @@ mod tests {
             ("dsh", true, false, false, false, true), // MCP is cordis-layer only; no own hook format
             ("grok", true, true, true, true, true),
             ("qoder-cn", true, false, true, true, true), // project MCP merge pending
+            ("penguin", false, false, false, false, false), // read-only discovery; no verified write formats
         ];
 
         let adapters = all_adapters();
@@ -1130,8 +1138,8 @@ mod tests {
         // skill concept, drop it from this assertion explicitly.
         let adapters = all_adapters();
         for a in &adapters {
-            if a.name() == "hermes" {
-                continue; // global-only: no project skills (hermes-agent#4667)
+            if matches!(a.name(), "hermes" | "penguin") {
+                continue; // global-only: no project skills (hermes-agent#4667; PenguinHarness stores agent state below its data root)
             }
             assert!(
                 !a.project_skill_dirs().is_empty(),
@@ -1165,8 +1173,8 @@ mod tests {
         .into_iter()
         .collect();
         for a in &adapters {
-            if a.name() == "hermes" {
-                continue; // global-only: no project skills (hermes-agent#4667)
+            if matches!(a.name(), "hermes" | "penguin") {
+                continue; // global-only: no project skills (hermes-agent#4667; PenguinHarness stores agent state below its data root)
             }
             let actual = a.project_skill_dirs().into_iter().next().unwrap();
             let want = expected.get(a.name()).expect("adapter not in expected map");

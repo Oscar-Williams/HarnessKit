@@ -334,9 +334,9 @@ describe("sortAgentNames", () => {
 });
 
 describe("AGENT_ORDER", () => {
-  it("lists 14 agents with qoder-cn last", () => {
-    expect(AGENT_ORDER).toHaveLength(14);
-    expect(AGENT_ORDER[AGENT_ORDER.length - 1]).toBe("qoder-cn");
+  it("lists 15 agents with penguin last", () => {
+    expect(AGENT_ORDER).toHaveLength(15);
+    expect(AGENT_ORDER[AGENT_ORDER.length - 1]).toBe("penguin");
   });
 });
 
@@ -351,6 +351,7 @@ describe("agentDisplayName", () => {
     expect(agentDisplayName("omp")).toBe("Oh My Pi");
     expect(agentDisplayName("dsh")).toBe("DeepSeek");
     expect(agentDisplayName("grok")).toBe("Grok Build");
+    expect(agentDisplayName("penguin")).toBe("PenguinHarness");
   });
 
   it("capitalizes first letter for unknown agents", () => {
