@@ -124,13 +124,9 @@ pub fn is_windows_abs_path(s: &str) -> bool {
 /// - `Validation`: path does not exist, or equals home dir itself
 pub fn resolve_and_validate_config_path(path: &str) -> Result<String, HkError> {
     let resolved = if path == "~" {
-        dirs::home_dir()
-            .map(|h| h.to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string())
+        crate::home_dir().to_string_lossy().to_string()
     } else if let Some(rest) = path.strip_prefix("~/") {
-        dirs::home_dir()
-            .map(|h| h.join(rest).to_string_lossy().to_string())
-            .unwrap_or_else(|| path.to_string())
+        crate::home_dir().join(rest).to_string_lossy().to_string()
     } else {
         path.to_string()
     };
@@ -148,7 +144,7 @@ pub fn resolve_and_validate_config_path(path: &str) -> Result<String, HkError> {
     // Compare canonical paths so trailing slashes, symlinks, and other
     // surface variants (e.g. `/Users/zoe/` vs `/Users/zoe`, or a symlink
     // pointing to home) all reject as "home itself".
-    let home = dirs::home_dir().unwrap_or_default();
+    let home = crate::home_dir();
     if let (Ok(rp), Ok(hp)) = (
         std::fs::canonicalize(resolved_path),
         std::fs::canonicalize(&home),
@@ -164,6 +160,7 @@ pub fn resolve_and_validate_config_path(path: &str) -> Result<String, HkError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[test]
@@ -309,7 +306,11 @@ mod tests {
 
     /// Bare "~" should expand to home and be rejected as "home itself" — not
     /// treated as a literal "~" path which then fails the existence check.
+    // The two home-reading tests below take the kit tests' env lock: those
+    // tests rewrite the home, and `resolve_and_validate_config_path` reads it
+    // twice (expansion, then the home-itself comparison).
     #[test]
+    #[serial(kit_env)]
     fn config_path_bare_tilde_expands_to_home_then_rejected() {
         let result = resolve_and_validate_config_path("~");
         match result {
@@ -324,11 +325,14 @@ mod tests {
     /// Home with trailing slash (or any surface variant pointing at home)
     /// should be caught by the canonicalize-based comparison.
     #[test]
+    #[serial(kit_env)]
     fn config_path_rejects_home_with_trailing_slash() {
-        let home = match dirs::home_dir() {
-            Some(h) => h,
-            None => return, // skip on environments without a home dir
-        };
+        // (Test) `crate::home_dir()` always returns a PathBuf; an empty one
+        // only happens in environments without any discoverable home.
+        let home = crate::home_dir();
+        if home.as_os_str().is_empty() {
+            return;
+        }
         let with_trailing = format!("{}/", home.to_string_lossy());
         let result = resolve_and_validate_config_path(&with_trailing);
         match result {

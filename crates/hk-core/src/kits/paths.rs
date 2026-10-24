@@ -2,10 +2,11 @@ use crate::HkError;
 use std::path::PathBuf;
 
 /// Canonical directory holding all Kit zip files: `~/.harnesskit/kits/`.
+///
+/// The home root is `crate::home_dir()`, which tests redirect through
+/// `HARNESSKIT_HOME` (the only override that works on Windows).
 pub fn kits_dir() -> Result<PathBuf, HkError> {
-    let home = dirs::home_dir()
-        .ok_or_else(|| HkError::Internal("home directory not found".into()))?;
-    Ok(home.join(".harnesskit").join("kits"))
+    Ok(crate::home_dir().join(".harnesskit").join("kits"))
 }
 
 /// Ensure `~/.harnesskit/kits/` exists; idempotent.

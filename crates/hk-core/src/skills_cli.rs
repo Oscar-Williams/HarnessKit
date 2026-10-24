@@ -16,8 +16,6 @@
 //! symlink doesn't touch the CLI's canonical `~/.agents` copy (no lockfile drift),
 //! so native removal is both safe and more precise.
 
-use std::process::Command;
-
 use crate::error::HkError;
 use crate::models::ConfigScope;
 
@@ -65,7 +63,7 @@ fn run(args: &[String]) -> Result<bool, HkError> {
 /// can be unit-tested with real shell utilities.
 fn run_with(launchers: &[(&str, &[&str])], args: &[String]) -> Result<bool, HkError> {
     for (program, lead) in launchers {
-        let mut cmd = Command::new(program);
+        let mut cmd = crate::command(program);
         cmd.args(*lead).args(args);
         match cmd.output() {
             Ok(out) if out.status.success() => return Ok(true),
@@ -114,7 +112,13 @@ mod tests {
     #[test]
     fn run_with_falls_through_missing_launcher_to_present_one() {
         // First launcher missing, second present and exits 0 → Ok(true).
+        #[cfg(unix)]
         let launchers: [(&str, &[&str]); 2] = [("hk-no-such-binary-xyz", &[]), ("true", &[])];
+        #[cfg(windows)]
+        let launchers: [(&str, &[&str]); 2] = [
+            ("hk-no-such-binary-xyz", &[]),
+            ("cmd", &["/c", "exit", "0"]),
+        ];
         assert!(run_with(&launchers, &[]).unwrap());
     }
 
@@ -122,7 +126,13 @@ mod tests {
     fn run_with_nonzero_exit_is_error_not_fallthrough() {
         // A launcher that runs but exits non-zero surfaces as Err — it must NOT
         // fall through to the next launcher (don't mask a real failure).
+        #[cfg(unix)]
         let launchers: [(&str, &[&str]); 2] = [("false", &[]), ("true", &[])];
+        #[cfg(windows)]
+        let launchers: [(&str, &[&str]); 2] = [
+            ("cmd", &["/c", "exit", "1"]),
+            ("cmd", &["/c", "exit", "0"]),
+        ];
         assert!(run_with(&launchers, &[]).is_err());
     }
 }

@@ -2,6 +2,7 @@
 
 mod commands;
 mod icon;
+mod title_bar;
 
 use commands::AppState;
 use hk_core::{adapter, store::Store};
@@ -10,12 +11,12 @@ use std::sync::Arc;
 use tauri::Manager;
 
 fn main() {
-    let data_dir = dirs::home_dir()
-        .expect("Cannot determine home directory — set HOME environment variable")
-        .join(".harnesskit");
+    // GUI process: console children must not flash a conhost window.
+    hk_core::process::hide_console_windows();
+
+    let data_dir = hk_core::home_dir().join(".harnesskit");
     std::fs::create_dir_all(&data_dir).expect("Failed to create data dir");
     let store = Store::open(&data_dir.join("metadata.db")).expect("Failed to open database");
-
 
     // NOTE: tauri.conf.json sets `macOSPrivateApi: true`. This is required for:
     // 1. Window transparency (`"transparent": true` in window config)
@@ -97,12 +98,22 @@ fn main() {
             commands::import_kit,
             commands::list_project_install_records,
             icon::set_app_icon,
+            title_bar::set_title_bar_color,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide instead of quit on macOS red X
-                window.hide().unwrap_or_default();
-                api.prevent_close();
+                // macOS: hide instead of quit so the dock icon keeps the app
+                // alive. Windows/Linux: closing the window quits the app
+                // (there is no dock/tray to bring a hidden window back).
+                #[cfg(target_os = "macos")]
+                {
+                    window.hide().unwrap_or_default();
+                    api.prevent_close();
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    let _ = (window, api);
+                }
             }
         })
         .build(tauri::generate_context!())

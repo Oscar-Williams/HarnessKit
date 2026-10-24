@@ -11,24 +11,50 @@ use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
 
-/// RAII guard that restores `HOME` on drop, so env pollution from one test
-/// cannot affect later tests that run on other threads.
-pub(super) struct RestoreHome(Option<std::ffi::OsString>);
+/// RAII guard that restores the test home (`HOME` and the `HARNESSKIT_HOME`
+/// override) on drop, so env pollution from one test cannot affect later
+/// tests that run on other threads.
+pub(super) struct RestoreHome {
+    home: Option<std::ffi::OsString>,
+    hk_home: Option<std::ffi::OsString>,
+}
 impl RestoreHome {
     pub(super) fn new() -> Self {
-        Self(std::env::var_os("HOME"))
+        Self {
+            home: std::env::var_os("HOME"),
+            hk_home: std::env::var_os("HARNESSKIT_HOME"),
+        }
     }
 }
 impl Drop for RestoreHome {
     fn drop(&mut self) {
-        // SAFETY: called from the same thread that set HOME; `#[serial(kit_env)]`
+        // SAFETY: called from the same thread that set the vars; `#[serial(kit_env)]`
         // ensures no other kit_env test runs concurrently at this point.
         unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
+            restore_var("HOME", &self.home);
+            restore_var("HARNESSKIT_HOME", &self.hk_home);
         }
+    }
+}
+
+unsafe fn restore_var(name: &str, value: &Option<std::ffi::OsString>) {
+    unsafe {
+        match value {
+            Some(v) => std::env::set_var(name, v),
+            None => std::env::remove_var(name),
+        }
+    }
+}
+
+/// Point the test home at `dir`. `HOME` covers anything that still reads it
+/// directly; `HARNESSKIT_HOME` is what `crate::home_dir()` honors, and the
+/// only redirect that works on Windows, where `dirs::home_dir()` asks the
+/// shell for the profile folder and ignores `HOME`.
+pub(super) fn set_test_home(dir: &std::path::Path) {
+    // SAFETY: kit tests are `#[serial(kit_env)]`, so no concurrent env access.
+    unsafe {
+        std::env::set_var("HOME", dir);
+        std::env::set_var("HARNESSKIT_HOME", dir);
     }
 }
 
@@ -66,11 +92,9 @@ fn make_basic_kit(
 #[serial(kit_env)]
 fn create_kit_writes_zip_and_db_rows() {
     let dir = tempdir().unwrap();
-    // Redirect HOME so kits land in our tempdir (avoid polluting real home).
-    // SAFETY: this test is single-threaded at env mutation time; `#[serial(kit_env)]`
-    // prevents concurrent mutation from other tests in this suite.
+    // Redirect the home so kits land in our tempdir (avoid polluting real home).
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -78,7 +102,10 @@ fn create_kit_writes_zip_and_db_rows() {
     assert_eq!(summary.name, "Empty-ext Test");
     assert_eq!(summary.config_file_count, 1);
 
-    let zip_path = dir.path().join(".harnesskit/kits").join(format!("{}.hk-kit.zip", summary.id));
+    // Kits root is `HARNESSKIT_HOME`-overridable (set by set_test_home), so
+    // resolve through the same helper production uses instead of guessing
+    // `~/.harnesskit` — which Windows can't redirect.
+    let zip_path = crate::kits::paths::zip_path_for(&summary.id).unwrap();
     assert!(zip_path.exists(), "zip should exist at {}", zip_path.display());
 
     let manifest = read_manifest_from_zip(&zip_path).unwrap();
@@ -93,10 +120,8 @@ fn create_kit_writes_zip_and_db_rows() {
 #[serial(kit_env)]
 fn create_kit_rejects_duplicate_name() {
     let dir = tempdir().unwrap();
-    // SAFETY: single-threaded env mutation; `#[serial(kit_env)]` prevents races.
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -126,9 +151,8 @@ fn create_kit_treats_name_collisions_case_insensitively() {
     // pre-flight check and then trip the DB constraint with the gibberish
     // error this whole change is meant to avoid.
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -163,9 +187,8 @@ fn update_kit_allows_renaming_to_own_current_name() {
     // A no-op rename (saving the editor without changing the name) must
     // not be rejected by the duplicate-name check.
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -198,9 +221,8 @@ fn update_kit_allows_renaming_to_own_current_name() {
 #[serial(kit_env)]
 fn list_kit_asset_candidates_filters_to_kit_able_kinds() {
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let candidates = list_kit_asset_candidates(&store, &adapters).unwrap();
@@ -213,7 +235,7 @@ fn list_kit_asset_candidates_filters_to_kit_able_kinds() {
 fn delete_kit_cascades_assets_and_stack_but_keeps_sync_records() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -246,7 +268,7 @@ fn delete_kit_cascades_assets_and_stack_but_keeps_sync_records() {
 fn preview_reports_conflict_when_target_exists() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -275,7 +297,7 @@ fn preview_reports_conflict_when_target_exists() {
 fn sync_extracts_files_and_writes_sync_record() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -314,9 +336,8 @@ fn sync_extracts_files_and_writes_sync_record() {
 #[serial(kit_env)]
 fn sync_skips_conflict_unless_forced() {
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -381,7 +402,7 @@ fn sync_skips_conflict_unless_forced() {
 fn unsync_removes_files_and_record_idempotent_on_missing() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -426,7 +447,7 @@ fn unsync_removes_files_and_record_idempotent_on_missing() {
 fn export_is_byte_identical_copy() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let summary = make_basic_kit(&store, &adapters, dir.path(), "Export", "x");
@@ -443,7 +464,7 @@ fn export_is_byte_identical_copy() {
 fn import_generates_new_id_and_dedupes_name() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let original = make_basic_kit(&store, &adapters, dir.path(), "Shared", "x");
@@ -464,7 +485,7 @@ fn import_generates_new_id_and_dedupes_name() {
 fn import_rejects_path_traversal_in_manifest() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
 
     // Build a hand-crafted bad zip with a single entry "../escape"
@@ -501,7 +522,7 @@ fn list_kits_kind_counts_fall_back_to_manifest_for_cross_machine_imports() {
     // even though the kit clearly has extensions.
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
 
     // Hand-craft a manifest with two extensions (a skill + an MCP) whose
@@ -579,7 +600,7 @@ fn list_kits_kind_counts_fall_back_to_manifest_for_cross_machine_imports() {
 fn import_rejects_future_kit_format_version() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
 
     // Build a zip with manifest claiming kit_format_version = 99
@@ -609,7 +630,7 @@ fn import_rejects_future_kit_format_version() {
 fn update_kit_changes_name_preserves_created_at() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let src = dir.path().join("CLAUDE.md");
@@ -723,7 +744,7 @@ fn make_mcp_kit(
 fn sync_mcp_merges_into_existing_mcp_json() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -801,7 +822,7 @@ fn sync_mcp_merges_into_existing_mcp_json() {
 fn sync_mcp_writes_wrapped_format_on_empty_project() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -854,7 +875,7 @@ fn sync_mcp_writes_wrapped_format_on_empty_project() {
 fn unsync_mcp_removes_only_named_entry() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -942,7 +963,7 @@ fn unsync_mcp_removes_only_named_entry() {
 fn preview_mcp_conflict_only_when_name_exists() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -1017,7 +1038,7 @@ fn create_kit_rejects_hook_extension() {
     // must cause sync_kit_to_project to return the Hook-unsupported error.
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -1154,9 +1175,8 @@ fn create_kit_packs_standalone_md_skill_as_folder_with_skill_md() {
     // `<prefix>SKILL.md` inside the zip so install-side recreates it as a
     // proper folder skill the receiving agent's scanner can discover.
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
 
     // Real .md skill on disk under claude's global skill dir.
     let skill_path = dir
@@ -1201,10 +1221,7 @@ fn create_kit_packs_standalone_md_skill_as_folder_with_skill_md() {
     )
     .expect("standalone .md skill must pack without 'Not a directory' failure");
 
-    let zip_path = dir
-        .path()
-        .join(".harnesskit/kits")
-        .join(format!("{}.hk-kit.zip", summary.id));
+    let zip_path = crate::kits::paths::zip_path_for(&summary.id).unwrap();
     let manifest = read_manifest_from_zip(&zip_path).unwrap();
     assert_eq!(manifest.extensions.len(), 1);
     // The zip must contain a SKILL.md entry under the extension's asset
@@ -1233,9 +1250,8 @@ fn list_kit_asset_candidates_excludes_rows_with_missing_source_on_disk() {
     // source path doesn't exist anywhere under the tempdir HOME, then asserts
     // it does NOT appear in candidates.
     let dir = tempdir().unwrap();
-    let orig_home = std::env::var_os("HOME");
-    unsafe { std::env::set_var("HOME", dir.path()); }
-    let _restore = RestoreHome(orig_home);
+    let _restore = RestoreHome::new();
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
 
@@ -1362,7 +1378,7 @@ fn sync_merges_same_target_config_sources_with_blank_line_separator() {
     // second source silently overwriting the first.
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -1541,7 +1557,7 @@ fn make_skill_kit_with_url(
 fn sync_skill_writes_install_meta_url_from_manifest() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -1602,7 +1618,7 @@ fn sync_skill_writes_install_meta_url_from_manifest() {
 fn unsync_clears_install_meta_on_kit_installed_skills() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
@@ -1681,7 +1697,7 @@ fn unsync_clears_install_meta_on_kit_installed_skills() {
 fn sync_skill_leaves_install_meta_null_when_manifest_url_is_none() {
     let dir = tempdir().unwrap();
     let _restore = RestoreHome::new();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    set_test_home(dir.path());
     let store = Mutex::new(Store::open(&dir.path().join("hk.db")).unwrap());
     let adapters = all_adapters();
     let project = dir.path().join("proj");
